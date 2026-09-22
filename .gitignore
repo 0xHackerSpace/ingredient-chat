@@ -1,0 +1,16 @@
+node_modules
+dist
+*.log
+*.local
+.env
+.env.*
+!.env.example
+.mf/
+.vercel
+test-results/
+playwright-report/
+
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
