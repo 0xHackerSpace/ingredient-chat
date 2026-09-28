@@ -6,7 +6,7 @@ import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
-import { PaperPlaneTilt, ShieldWarning, WarningCircle } from '@phosphor-icons/react';
+import { PaperPlaneTilt, WarningCircle } from '@phosphor-icons/react';
 
 import { createSession, listMessages, listSessions, sendMessage } from '../api/client';
 import { hasPermission } from '../api/token';
@@ -14,12 +14,6 @@ import type { ChatSession } from '../api/types';
 import SessionPicker from './SessionPicker';
 import { ChatSurface, Composer, Message, MessageList } from './styled';
 import type { ChatMessage, UserProfile } from './types';
-
-const seed: ChatMessage[] = [
-  { id: 1, own: false, text: 'Hello, how can I help you?' },
-  { id: 2, own: true, text: 'Checking whether the boiler loop is still reporting.' },
-  { id: 3, own: false, text: 'Header pressure has been out of range for about nine seconds.' },
-];
 
 // wrapper-api's ai worker requires this permission on /v1/sessions* — see
 // ../api/token.ts.
@@ -31,15 +25,15 @@ type ItemProps = {
   // hooks resolve to its own separate module/Context, not the host's — so
   // app state travels as a plain prop instead, same as the theme.
   userProfile?: UserProfile;
-  // The signed-in user's session token. Without it, Chat falls back to the
-  // local-only seeded conversation — same graceful-degradation rule as
-  // userProfile/theme — so a host that hasn't wired auth through yet, or the
-  // standalone dev harness (see ../App.tsx), still has something to look at.
+  // The signed-in user's session token. No token, or one without ai:chat in
+  // its own payload (see ../api/token.ts), and this renders nothing — there's
+  // no local-only demo mode to fall back to, so a host shouldn't mount this
+  // module at all for a user it already knows can't use it.
   token?: string;
 };
 
 function Item({ userProfile, token }: ItemProps) {
-  const [conversation, setConversation] = useState<ChatMessage[]>(token ? [] : seed);
+  const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -49,10 +43,7 @@ function Item({ userProfile, token }: ItemProps) {
   const [isSending, setIsSending] = useState(false);
   const [apiError, setApiError] = useState('');
 
-  // Checked from the token itself, not from an API response — a user without
-  // ai:chat never sees a composer that's guaranteed to be rejected. No token
-  // at all still falls back to the local-only demo (see ItemProps.token).
-  const hasChatAccess = !token || hasPermission(token, CHAT_PERMISSION);
+  const hasChatAccess = Boolean(token) && hasPermission(token as string, CHAT_PERMISSION);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
@@ -96,7 +87,7 @@ function Item({ userProfile, token }: ItemProps) {
   const skipNextMessagesLoadRef = useRef(false);
 
   useEffect(() => {
-    if (!token || !activeSessionId) return;
+    if (!token || !hasChatAccess || !activeSessionId) return;
 
     if (skipNextMessagesLoadRef.current) {
       skipNextMessagesLoadRef.current = false;
@@ -123,7 +114,7 @@ function Item({ userProfile, token }: ItemProps) {
     return () => {
       cancelled = true;
     };
-  }, [token, activeSessionId]);
+  }, [token, hasChatAccess, activeSessionId]);
 
   const handleNewSession = useCallback(async () => {
     if (!token || !hasChatAccess) return;
@@ -144,18 +135,7 @@ function Item({ userProfile, token }: ItemProps) {
     event.preventDefault();
 
     const text = draft.trim();
-    if (!text) return;
-
-    if (!token) {
-      // Local-only mode: nothing to call, just echo it into the transcript.
-      setConversation((current) => [...current, { id: Date.now(), own: true, text }]);
-      setDraft('');
-      return;
-    }
-
-    // The composer is hidden whenever this is false — reachable only if
-    // something calls send() directly, not through a real user click.
-    if (!hasChatAccess) return;
+    if (!text || !token || !hasChatAccess) return;
 
     setDraft('');
     setApiError('');
@@ -198,6 +178,8 @@ function Item({ userProfile, token }: ItemProps) {
     }
   }
 
+  if (!hasChatAccess) return null;
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <Typography variant="h1">Conversation</Typography>
@@ -212,73 +194,51 @@ function Item({ userProfile, token }: ItemProps) {
         )}
       </Box>
 
-      {token && !hasChatAccess ? (
-        <ChatSurface
-          sx={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center', px: 3 }}
-        >
-          <Box sx={{ maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <ShieldWarning size={28} style={{ margin: '0 auto' }} />
-            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Your account doesn&apos;t have chat access yet — ask an admin to grant the{' '}
-              {CHAT_PERMISSION} permission.
-            </Typography>
-          </Box>
-        </ChatSurface>
-      ) : (
-        <>
-          {token && (
-            <SessionPicker
-              sessions={sessions}
-              activeSessionId={activeSessionId}
-              onSelect={setActiveSessionId}
-              onNewSession={handleNewSession}
-              disabled={isLoadingSessions}
-            />
-          )}
+      <SessionPicker
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelect={setActiveSessionId}
+        onNewSession={handleNewSession}
+        disabled={isLoadingSessions}
+      />
 
-          {apiError && (
-            <Box
-              sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', mb: 1.5 }}
-            >
-              <WarningCircle size={16} />
-              <Typography variant="body2" sx={{ color: 'inherit' }}>
-                {apiError}
-              </Typography>
-            </Box>
-          )}
-
-          <ChatSurface>
-            <MessageList>
-              {isLoadingSessions && (
-                <CircularProgress size={20} sx={{ alignSelf: 'center', my: 2 }} />
-              )}
-              {conversation.map((message) => (
-                <Message key={message.id} own={message.own}>
-                  {message.text}
-                </Message>
-              ))}
-              <div ref={endRef} />
-            </MessageList>
-
-            <Composer component="form" onSubmit={send}>
-              <TextField
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="Write a message…"
-                size="small"
-                fullWidth
-                multiline
-                maxRows={4}
-                disabled={isSending}
-                inputProps={{ 'aria-label': 'Message' }}
-              />
-              <IconButton type="submit" aria-label="Send" disabled={!draft.trim() || isSending}>
-                <PaperPlaneTilt size={18} weight="fill" />
-              </IconButton>
-            </Composer>
-          </ChatSurface>
-        </>
+      {apiError && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', mb: 1.5 }}>
+          <WarningCircle size={16} />
+          <Typography variant="body2" sx={{ color: 'inherit' }}>
+            {apiError}
+          </Typography>
+        </Box>
       )}
+
+      <ChatSurface>
+        <MessageList>
+          {isLoadingSessions && <CircularProgress size={20} sx={{ alignSelf: 'center', my: 2 }} />}
+          {conversation.map((message) => (
+            <Message key={message.id} own={message.own}>
+              {message.text}
+            </Message>
+          ))}
+          <div ref={endRef} />
+        </MessageList>
+
+        <Composer component="form" onSubmit={send}>
+          <TextField
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Write a message…"
+            size="small"
+            fullWidth
+            multiline
+            maxRows={4}
+            disabled={isSending}
+            inputProps={{ 'aria-label': 'Message' }}
+          />
+          <IconButton type="submit" aria-label="Send" disabled={!draft.trim() || isSending}>
+            <PaperPlaneTilt size={18} weight="fill" />
+          </IconButton>
+        </Composer>
+      </ChatSurface>
     </Box>
   );
 }

@@ -34,49 +34,29 @@ function makeToken(payload: Record<string, unknown>): string {
   return `${header}.${body}.signature`;
 }
 
-describe('Item (no token — local-only fallback)', () => {
-  it('renders the seeded conversation', () => {
-    renderWithTheme(<Item />);
-
-    expect(screen.getByText('Hello, how can I help you?')).toBeInTheDocument();
-    expect(
-      screen.getByText('Checking whether the boiler loop is still reporting.'),
-    ).toBeInTheDocument();
+describe('Item (no token)', () => {
+  beforeEach(() => {
+    vi.mocked(listSessions).mockReset();
   });
 
-  it('does not show a profile line when none is given', () => {
-    renderWithTheme(<Item />);
+  it('renders nothing', () => {
+    const { container } = renderWithTheme(<Item />);
 
-    expect(screen.queryByText(/Signed in as/)).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
-  it('shows the profile the host passes', () => {
-    renderWithTheme(<Item userProfile={{ role: 'operator', tenantName: 'Acme Plant 4' }} />);
+  it('renders nothing even with a userProfile', () => {
+    const { container } = renderWithTheme(
+      <Item userProfile={{ role: 'operator', tenantName: 'Acme Plant 4' }} />,
+    );
 
-    expect(screen.getByText('Signed in as operator · Acme Plant 4')).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
-  it('sends a message and clears the draft', () => {
+  it('never calls the API', () => {
     renderWithTheme(<Item />);
 
-    const input = screen.getByLabelText('Message');
-    fireEvent.change(input, { target: { value: 'Restarting the compressor.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-
-    expect(screen.getByText('Restarting the compressor.')).toBeInTheDocument();
-    expect(input).toHaveValue('');
-  });
-
-  it('disables send while the draft is empty', () => {
-    renderWithTheme(<Item />);
-
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
-  });
-
-  it('does not show the session picker without a token', () => {
-    renderWithTheme(<Item />);
-
-    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+    expect(listSessions).not.toHaveBeenCalled();
   });
 });
 
@@ -169,14 +149,21 @@ describe('Item (token without the ai:chat permission)', () => {
     vi.mocked(sendMessage).mockReset();
   });
 
-  it('shows an access message instead of the composer, without calling the API', () => {
+  it('renders nothing, without calling the API', () => {
     const token = makeToken({ permissions: ['api:access'] });
 
-    renderWithTheme(<Item token={token} />);
+    const { container } = renderWithTheme(<Item token={token} />);
 
-    expect(screen.getByText(/doesn't have chat access yet/)).toBeInTheDocument();
-    expect(screen.queryByLabelText('Message')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing for a token with no permissions at all', () => {
+    const token = makeToken({});
+
+    const { container } = renderWithTheme(<Item token={token} />);
+
+    expect(container).toBeEmptyDOMElement();
     expect(listSessions).not.toHaveBeenCalled();
   });
 
