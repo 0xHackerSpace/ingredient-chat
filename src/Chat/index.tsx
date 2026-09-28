@@ -16,14 +16,18 @@ type ExposedChatProps = {
   // singleton across the federation boundary either, so host app state (the
   // logged-in user's profile) travels as a prop too.
   userProfile?: UserProfile;
+  // The signed-in user's session token, so this remote can call wrapper-api
+  // (sessions, messages) on their behalf. Same reasoning as theme/userProfile
+  // — a plain prop, never something pulled from a shared store.
+  token?: string;
 };
 
-function ExposedChat({ theme, userProfile }: ExposedChatProps) {
-  if (!theme) return <Item userProfile={userProfile} />;
+function ExposedChat({ theme, userProfile, token }: ExposedChatProps) {
+  if (!theme) return <Item userProfile={userProfile} token={token} />;
 
   return (
     <ThemeProvider theme={theme}>
-      <Item userProfile={userProfile} />
+      <Item userProfile={userProfile} token={token} />
     </ThemeProvider>
   );
 }

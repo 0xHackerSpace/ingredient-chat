@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import Box from '@mui/material/Box';
+import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
-import { PaperPlaneTilt } from '@phosphor-icons/react';
+import { PaperPlaneTilt, WarningCircle } from '@phosphor-icons/react';
 
+import { createSession, listMessages, listSessions, sendMessage } from '../api/client';
+import type { ChatSession } from '../api/types';
+import SessionPicker from './SessionPicker';
 import { ChatSurface, Composer, Message, MessageList } from './styled';
 import type { ChatMessage, UserProfile } from './types';
 
@@ -22,31 +26,168 @@ type ItemProps = {
   // hooks resolve to its own separate module/Context, not the host's — so
   // app state travels as a plain prop instead, same as the theme.
   userProfile?: UserProfile;
+  // The signed-in user's session token. Without it, Chat falls back to the
+  // local-only seeded conversation — same graceful-degradation rule as
+  // userProfile/theme — so a host that hasn't wired auth through yet, or the
+  // standalone dev harness (see ../App.tsx), still has something to look at.
+  token?: string;
 };
 
-function Item({ userProfile }: ItemProps) {
-  const [conversation, setConversation] = useState<ChatMessage[]>(seed);
+function Item({ userProfile, token }: ItemProps) {
+  const [conversation, setConversation] = useState<ChatMessage[]>(token ? [] : seed);
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
+
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [apiError, setApiError] = useState('');
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [conversation]);
 
-  function send(event: React.FormEvent) {
+  // Load the signed-in user's sessions once a token shows up, and open the
+  // most recently active one — listSessions() is already ordered that way.
+  useEffect(() => {
+    if (!token) return;
+
+    let cancelled = false;
+    setIsLoadingSessions(true);
+    setApiError('');
+
+    listSessions(token)
+      .then((fetched) => {
+        if (cancelled) return;
+        setSessions(fetched);
+        setActiveSessionId(fetched[0]?.id ?? null);
+        if (!fetched[0]) setConversation([]);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setApiError(err instanceof Error ? err.message : 'Failed to load conversations');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSessions(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  // Load the active session's history whenever the selection changes. Skipped
+  // once right after *this* component creates a session (lazily on first
+  // send, or via "New conversation") — it's known to be empty, and fetching
+  // it anyway races the optimistic message send() just appended, sometimes
+  // clobbering it with the pre-send (empty) server state.
+  const skipNextMessagesLoadRef = useRef(false);
+
+  useEffect(() => {
+    if (!token || !activeSessionId) return;
+
+    if (skipNextMessagesLoadRef.current) {
+      skipNextMessagesLoadRef.current = false;
+      return;
+    }
+
+    let cancelled = false;
+
+    listMessages(token, activeSessionId)
+      .then((messages) => {
+        if (cancelled) return;
+        setConversation(
+          messages.map((message) => ({
+            id: message.id,
+            own: message.role === 'user',
+            text: message.content,
+          })),
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) setApiError(err instanceof Error ? err.message : 'Failed to load messages');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token, activeSessionId]);
+
+  const handleNewSession = useCallback(async () => {
+    if (!token) return;
+
+    setApiError('');
+    try {
+      const session = await createSession(token);
+      setSessions((current) => [session, ...current]);
+      skipNextMessagesLoadRef.current = true;
+      setActiveSessionId(session.id);
+      setConversation([]);
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : 'Failed to start a new conversation');
+    }
+  }, [token]);
+
+  async function send(event: React.FormEvent) {
     event.preventDefault();
 
     const text = draft.trim();
     if (!text) return;
 
-    setConversation((current) => [...current, { id: Date.now(), own: true, text }]);
+    if (!token) {
+      // Local-only mode: nothing to call, just echo it into the transcript.
+      setConversation((current) => [...current, { id: Date.now(), own: true, text }]);
+      setDraft('');
+      return;
+    }
+
     setDraft('');
+    setApiError('');
+
+    let sessionId = activeSessionId;
+    // Lazily create a session on the first message — no "New conversation"
+    // click required before you can say anything.
+    if (!sessionId) {
+      try {
+        const session = await createSession(token);
+        sessionId = session.id;
+        setSessions((current) => [session, ...current]);
+        skipNextMessagesLoadRef.current = true;
+        setActiveSessionId(session.id);
+      } catch (err) {
+        setApiError(err instanceof Error ? err.message : 'Failed to start a new conversation');
+        return;
+      }
+    }
+
+    const optimisticId = `pending-${Date.now()}`;
+    setConversation((current) => [...current, { id: optimisticId, own: true, text }]);
+    setIsSending(true);
+
+    try {
+      const result = await sendMessage(token, sessionId, text);
+      setConversation((current) => [
+        ...current,
+        { id: `${optimisticId}-reply`, own: false, text: result.message.content },
+      ]);
+      // Title/ordering are server-computed (the first message becomes the
+      // title) — refetch quietly so the picker doesn't drift from the server.
+      listSessions(token)
+        .then(setSessions)
+        .catch(() => {});
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : 'Failed to send message');
+    } finally {
+      setIsSending(false);
+    }
   }
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <Typography variant="h1">Conversation</Typography>
-      <Box sx={{ mt: 0.5, mb: 3 }}>
+      <Box sx={{ mt: 0.5, mb: 2 }}>
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
           A prototype, but a destination people expect to find.
         </Typography>
@@ -57,8 +198,28 @@ function Item({ userProfile }: ItemProps) {
         )}
       </Box>
 
+      {token && (
+        <SessionPicker
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelect={setActiveSessionId}
+          onNewSession={handleNewSession}
+          disabled={isLoadingSessions}
+        />
+      )}
+
+      {apiError && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', mb: 1.5 }}>
+          <WarningCircle size={16} />
+          <Typography variant="body2" sx={{ color: 'inherit' }}>
+            {apiError}
+          </Typography>
+        </Box>
+      )}
+
       <ChatSurface>
         <MessageList>
+          {isLoadingSessions && <CircularProgress size={20} sx={{ alignSelf: 'center', my: 2 }} />}
           {conversation.map((message) => (
             <Message key={message.id} own={message.own}>
               {message.text}
@@ -76,9 +237,10 @@ function Item({ userProfile }: ItemProps) {
             fullWidth
             multiline
             maxRows={4}
+            disabled={isSending}
             inputProps={{ 'aria-label': 'Message' }}
           />
-          <IconButton type="submit" aria-label="Send" disabled={!draft.trim()}>
+          <IconButton type="submit" aria-label="Send" disabled={!draft.trim() || isSending}>
             <PaperPlaneTilt size={18} weight="fill" />
           </IconButton>
         </Composer>
