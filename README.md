@@ -79,7 +79,7 @@ Without a `token`, Chat falls back to a local-only seeded conversation — nothi
 - Sending a message with no session selected yet creates one lazily first — no "New conversation" click required before you can say anything.
 - Both persisted history (`GET /v1/sessions/:id/messages`) and new turns (`POST /v1/sessions/:id/messages`) go through the same session, so a conversation survives a reload as long as the token does.
 
-A permission error from the API (a user with no `ai:chat` permission, same shape as `wrapper`'s own `/profile` handling) shows as an inline message instead of crashing — the composer stays visible, just unable to send.
+Access itself is gated on `ai:chat` being present in the token's own payload (`src/api/token.ts`), checked client-side before any request goes out — a user without it sees an explanatory message instead of a composer that would just be rejected. This is a courtesy check only; the ai worker still re-validates every request. A permission error surfaced by the API for some other reason still shows as an inline message instead of crashing.
 
 ## Deploying
 

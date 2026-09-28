@@ -24,6 +24,16 @@ vi.mock('../api/client', () => ({
   sendMessage: vi.fn(),
 }));
 
+function makeToken(payload: Record<string, unknown>): string {
+  const base64url = (value: string) =>
+    btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const body = base64url(JSON.stringify(payload));
+
+  return `${header}.${body}.signature`;
+}
+
 describe('Item (no token — local-only fallback)', () => {
   it('renders the seeded conversation', () => {
     renderWithTheme(<Item />);
@@ -71,6 +81,10 @@ describe('Item (no token — local-only fallback)', () => {
 });
 
 describe('Item (with a token — real wrapper-api sessions)', () => {
+  // Carries ai:chat, so the permission gate never gets in the way of these
+  // API-behavior tests — see the dedicated describe block below for that.
+  const token = makeToken({ permissions: ['ai:chat'] });
+
   beforeEach(() => {
     vi.mocked(listSessions).mockReset();
     vi.mocked(createSession).mockReset();
@@ -93,7 +107,7 @@ describe('Item (with a token — real wrapper-api sessions)', () => {
       },
     ]);
 
-    renderWithTheme(<Item token="tok" />);
+    renderWithTheme(<Item token={token} />);
 
     await waitFor(() => expect(screen.getByText('Ping')).toBeInTheDocument());
     expect(screen.getByText('Boiler check')).toBeInTheDocument();
@@ -102,7 +116,7 @@ describe('Item (with a token — real wrapper-api sessions)', () => {
   it('shows an empty state, not a crash, when there are no sessions yet', async () => {
     vi.mocked(listSessions).mockResolvedValue([]);
 
-    renderWithTheme(<Item token="tok" />);
+    renderWithTheme(<Item token={token} />);
 
     await waitFor(() => expect(screen.getByText('No conversations yet')).toBeInTheDocument());
     expect(screen.queryByText('Hello, how can I help you?')).not.toBeInTheDocument();
@@ -122,7 +136,7 @@ describe('Item (with a token — real wrapper-api sessions)', () => {
       message: { role: 'assistant', content: 'Sure, on it.' },
     });
 
-    renderWithTheme(<Item token="tok" />);
+    renderWithTheme(<Item token={token} />);
     await waitFor(() => expect(screen.getByText('No conversations yet')).toBeInTheDocument());
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Check the pump' } });
@@ -132,17 +146,47 @@ describe('Item (with a token — real wrapper-api sessions)', () => {
     // is created on the first message), so it isn't synchronous with click.
     await waitFor(() => expect(screen.getByText('Check the pump')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('Sure, on it.')).toBeInTheDocument());
-    expect(createSession).toHaveBeenCalledWith('tok');
-    expect(sendMessage).toHaveBeenCalledWith('tok', 's1', 'Check the pump');
+    expect(createSession).toHaveBeenCalledWith(token);
+    expect(sendMessage).toHaveBeenCalledWith(token, 's1', 'Check the pump');
   });
 
   it('shows a friendly error instead of crashing when loading sessions fails', async () => {
     vi.mocked(listSessions).mockRejectedValue(new Error('Missing required permission: ai:chat'));
 
-    renderWithTheme(<Item token="tok" />);
+    renderWithTheme(<Item token={token} />);
 
     await waitFor(() =>
       expect(screen.getByText('Missing required permission: ai:chat')).toBeInTheDocument(),
     );
+  });
+});
+
+describe('Item (token without the ai:chat permission)', () => {
+  beforeEach(() => {
+    vi.mocked(listSessions).mockReset();
+    vi.mocked(createSession).mockReset();
+    vi.mocked(listMessages).mockReset();
+    vi.mocked(sendMessage).mockReset();
+  });
+
+  it('shows an access message instead of the composer, without calling the API', () => {
+    const token = makeToken({ permissions: ['api:access'] });
+
+    renderWithTheme(<Item token={token} />);
+
+    expect(screen.getByText(/doesn't have chat access yet/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Message')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it('still shows the composer for a token that does carry ai:chat', async () => {
+    const token = makeToken({ permissions: ['ai:chat'] });
+    vi.mocked(listSessions).mockResolvedValue([]);
+
+    renderWithTheme(<Item token={token} />);
+
+    await waitFor(() => expect(listSessions).toHaveBeenCalledWith(token));
+    expect(screen.getByLabelText('Message')).toBeInTheDocument();
   });
 });

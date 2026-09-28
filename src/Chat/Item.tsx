@@ -6,9 +6,10 @@ import IconButton from '@mui/material/IconButton';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
-import { PaperPlaneTilt, WarningCircle } from '@phosphor-icons/react';
+import { PaperPlaneTilt, ShieldWarning, WarningCircle } from '@phosphor-icons/react';
 
 import { createSession, listMessages, listSessions, sendMessage } from '../api/client';
+import { hasPermission } from '../api/token';
 import type { ChatSession } from '../api/types';
 import SessionPicker from './SessionPicker';
 import { ChatSurface, Composer, Message, MessageList } from './styled';
@@ -19,6 +20,10 @@ const seed: ChatMessage[] = [
   { id: 2, own: true, text: 'Checking whether the boiler loop is still reporting.' },
   { id: 3, own: false, text: 'Header pressure has been out of range for about nine seconds.' },
 ];
+
+// wrapper-api's ai worker requires this permission on /v1/sessions* — see
+// ../api/token.ts.
+const CHAT_PERMISSION = 'ai:chat';
 
 type ItemProps = {
   // Passed by the host. Sharing a state library (Recoil, etc.) as a
@@ -44,6 +49,11 @@ function Item({ userProfile, token }: ItemProps) {
   const [isSending, setIsSending] = useState(false);
   const [apiError, setApiError] = useState('');
 
+  // Checked from the token itself, not from an API response — a user without
+  // ai:chat never sees a composer that's guaranteed to be rejected. No token
+  // at all still falls back to the local-only demo (see ItemProps.token).
+  const hasChatAccess = !token || hasPermission(token, CHAT_PERMISSION);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [conversation]);
@@ -51,7 +61,7 @@ function Item({ userProfile, token }: ItemProps) {
   // Load the signed-in user's sessions once a token shows up, and open the
   // most recently active one — listSessions() is already ordered that way.
   useEffect(() => {
-    if (!token) return;
+    if (!token || !hasChatAccess) return;
 
     let cancelled = false;
     setIsLoadingSessions(true);
@@ -76,7 +86,7 @@ function Item({ userProfile, token }: ItemProps) {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, hasChatAccess]);
 
   // Load the active session's history whenever the selection changes. Skipped
   // once right after *this* component creates a session (lazily on first
@@ -116,7 +126,7 @@ function Item({ userProfile, token }: ItemProps) {
   }, [token, activeSessionId]);
 
   const handleNewSession = useCallback(async () => {
-    if (!token) return;
+    if (!token || !hasChatAccess) return;
 
     setApiError('');
     try {
@@ -128,7 +138,7 @@ function Item({ userProfile, token }: ItemProps) {
     } catch (err) {
       setApiError(err instanceof Error ? err.message : 'Failed to start a new conversation');
     }
-  }, [token]);
+  }, [token, hasChatAccess]);
 
   async function send(event: React.FormEvent) {
     event.preventDefault();
@@ -142,6 +152,10 @@ function Item({ userProfile, token }: ItemProps) {
       setDraft('');
       return;
     }
+
+    // The composer is hidden whenever this is false — reachable only if
+    // something calls send() directly, not through a real user click.
+    if (!hasChatAccess) return;
 
     setDraft('');
     setApiError('');
@@ -198,53 +212,73 @@ function Item({ userProfile, token }: ItemProps) {
         )}
       </Box>
 
-      {token && (
-        <SessionPicker
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelect={setActiveSessionId}
-          onNewSession={handleNewSession}
-          disabled={isLoadingSessions}
-        />
+      {token && !hasChatAccess ? (
+        <ChatSurface
+          sx={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center', px: 3 }}
+        >
+          <Box sx={{ maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <ShieldWarning size={28} style={{ margin: '0 auto' }} />
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Your account doesn&apos;t have chat access yet — ask an admin to grant the{' '}
+              {CHAT_PERMISSION} permission.
+            </Typography>
+          </Box>
+        </ChatSurface>
+      ) : (
+        <>
+          {token && (
+            <SessionPicker
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSelect={setActiveSessionId}
+              onNewSession={handleNewSession}
+              disabled={isLoadingSessions}
+            />
+          )}
+
+          {apiError && (
+            <Box
+              sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', mb: 1.5 }}
+            >
+              <WarningCircle size={16} />
+              <Typography variant="body2" sx={{ color: 'inherit' }}>
+                {apiError}
+              </Typography>
+            </Box>
+          )}
+
+          <ChatSurface>
+            <MessageList>
+              {isLoadingSessions && (
+                <CircularProgress size={20} sx={{ alignSelf: 'center', my: 2 }} />
+              )}
+              {conversation.map((message) => (
+                <Message key={message.id} own={message.own}>
+                  {message.text}
+                </Message>
+              ))}
+              <div ref={endRef} />
+            </MessageList>
+
+            <Composer component="form" onSubmit={send}>
+              <TextField
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Write a message…"
+                size="small"
+                fullWidth
+                multiline
+                maxRows={4}
+                disabled={isSending}
+                inputProps={{ 'aria-label': 'Message' }}
+              />
+              <IconButton type="submit" aria-label="Send" disabled={!draft.trim() || isSending}>
+                <PaperPlaneTilt size={18} weight="fill" />
+              </IconButton>
+            </Composer>
+          </ChatSurface>
+        </>
       )}
-
-      {apiError && (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', mb: 1.5 }}>
-          <WarningCircle size={16} />
-          <Typography variant="body2" sx={{ color: 'inherit' }}>
-            {apiError}
-          </Typography>
-        </Box>
-      )}
-
-      <ChatSurface>
-        <MessageList>
-          {isLoadingSessions && <CircularProgress size={20} sx={{ alignSelf: 'center', my: 2 }} />}
-          {conversation.map((message) => (
-            <Message key={message.id} own={message.own}>
-              {message.text}
-            </Message>
-          ))}
-          <div ref={endRef} />
-        </MessageList>
-
-        <Composer component="form" onSubmit={send}>
-          <TextField
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="Write a message…"
-            size="small"
-            fullWidth
-            multiline
-            maxRows={4}
-            disabled={isSending}
-            inputProps={{ 'aria-label': 'Message' }}
-          />
-          <IconButton type="submit" aria-label="Send" disabled={!draft.trim() || isSending}>
-            <PaperPlaneTilt size={18} weight="fill" />
-          </IconButton>
-        </Composer>
-      </ChatSurface>
     </Box>
   );
 }
