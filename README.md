@@ -17,7 +17,17 @@ npm install
 npm run dev         # http://localhost:5174
 ```
 
-Opening it directly renders `src/App.tsx`, a standalone harness that wraps `Chat` in its own theme and a placeholder user profile — useful for developing the component in isolation, but not part of what this remote exposes to a host.
+Opening it directly renders `src/App.tsx`, a standalone harness that wraps `Chat` in its own theme and a placeholder user profile — useful for developing the component in isolation, but not part of what this remote exposes to a host. The standalone harness never passes a `token`, so it always runs in local-only mode (see below) — it's for developing the UI, not the wrapper-api integration.
+
+### Environment
+
+```bash
+cp .env.example .env
+```
+
+| Variable          | What it's for                                                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_AI_API_URL` | Base URL of [`wrapper-api`](https://github.com/0xHackerSpace/wrapper-api)'s `ai` worker (sessions, messages) — never hardcoded, see `src/api/client.ts`. |
 
 ## Scripts
 
@@ -50,15 +60,26 @@ federation({
 });
 ```
 
-A host declares it as a runtime remote (`type: 'module'` is required — see `ingredient`'s ADR 0001 for why) and passes the two props the component expects:
+A host declares it as a runtime remote (`type: 'module'` is required — see `ingredient`'s ADR 0001 for why) and passes the props the component expects:
 
 ```tsx
 const Chat = lazy(() => import('chat_remote/Chat'));
 
-<Chat theme={hostTheme} userProfile={{ role, tenantName }} />;
+<Chat theme={hostTheme} userProfile={{ role, tenantName }} token={session.token} />;
 ```
 
-Only `react`/`react-dom` are shared as federation singletons — not MUI, not emotion, not any state library. Theme and user data cross the boundary as plain props (`src/Chat/index.tsx`'s `ExposedChatProps`), not through shared Context.
+Only `react`/`react-dom` are shared as federation singletons — not MUI, not emotion, not any state library. Theme, user data and the session token cross the boundary as plain props (`src/Chat/index.tsx`'s `ExposedChatProps`), not through shared Context.
+
+## Sessions (talking to wrapper-api)
+
+Without a `token`, Chat falls back to a local-only seeded conversation — nothing is sent anywhere. With one, it calls [`wrapper-api`](https://github.com/0xHackerSpace/wrapper-api)'s `ai` worker for real (`src/api/client.ts`, `VITE_AI_API_URL`):
+
+- Lists the signed-in user's chat sessions on mount and opens the most recent one.
+- The header row (`src/Chat/SessionPicker.tsx`) lets you switch between sessions or start a new one.
+- Sending a message with no session selected yet creates one lazily first — no "New conversation" click required before you can say anything.
+- Both persisted history (`GET /v1/sessions/:id/messages`) and new turns (`POST /v1/sessions/:id/messages`) go through the same session, so a conversation survives a reload as long as the token does.
+
+Access itself is gated on `ai:chat` being present in the token's own payload (`src/api/token.ts`), checked client-side before any request goes out — a user without it sees an explanatory message instead of a composer that would just be rejected. This is a courtesy check only; the ai worker still re-validates every request. A permission error surfaced by the API for some other reason still shows as an inline message instead of crashing.
 
 ## Deploying
 

@@ -1,5 +1,7 @@
 type ChatMessage = {
-  id: number;
+  // API messages carry a UUID string; the local-only fallback and optimistic
+  // sends use a numeric/templated id instead — either is fine as a React key.
+  id: string | number;
   own: boolean;
   text: string;
 };
