@@ -17,7 +17,7 @@ npm install
 npm run dev         # http://localhost:5174
 ```
 
-Opening it directly renders `src/App.tsx`, a standalone harness that wraps `Chat` in its own theme and a placeholder user profile — useful for developing the component in isolation, but not part of what this remote exposes to a host. The standalone harness never passes a `token`, so it always runs in local-only mode (see below) — it's for developing the UI, not the wrapper-api integration.
+Opening it directly renders `src/App.tsx`, a standalone harness that wraps `Chat` in its own theme and a placeholder user profile — useful for developing the component in isolation, but not part of what this remote exposes to a host. It never passes a `token`, so `Chat` renders nothing there (see below) — it's a compile/typecheck harness, not a place to visually iterate on the sessions UI; do that against a real host or `npm run dev` with a token wired in manually.
 
 ### Environment
 
@@ -72,14 +72,15 @@ Only `react`/`react-dom` are shared as federation singletons — not MUI, not em
 
 ## Sessions (talking to wrapper-api)
 
-Without a `token`, Chat falls back to a local-only seeded conversation — nothing is sent anywhere. With one, it calls [`wrapper-api`](https://github.com/0xHackerSpace/wrapper-api)'s `ai` worker for real (`src/api/client.ts`, `VITE_AI_API_URL`):
+`Chat` renders nothing (`null`) unless the token both exists and carries the `ai:chat` permission in its own payload (checked client-side, `src/api/token.ts`) — no token, no local-only demo mode either, just an empty module. This is a courtesy check only; the `ai` worker still re-validates every request. A host that wants to show something else for a user it already knows lacks access (e.g. hide the nav entry) can make that same check itself before mounting the module at all.
+
+With a token carrying `ai:chat`, it calls [`wrapper-api`](https://github.com/0xHackerSpace/wrapper-api)'s `ai` worker for real (`src/api/client.ts`, `VITE_AI_API_URL`):
 
 - Lists the signed-in user's chat sessions on mount and opens the most recent one.
 - The header row (`src/Chat/SessionPicker.tsx`) lets you switch between sessions or start a new one.
 - Sending a message with no session selected yet creates one lazily first — no "New conversation" click required before you can say anything.
 - Both persisted history (`GET /v1/sessions/:id/messages`) and new turns (`POST /v1/sessions/:id/messages`) go through the same session, so a conversation survives a reload as long as the token does.
-
-Access itself is gated on `ai:chat` being present in the token's own payload (`src/api/token.ts`), checked client-side before any request goes out — a user without it sees an explanatory message instead of a composer that would just be rejected. This is a courtesy check only; the ai worker still re-validates every request. A permission error surfaced by the API for some other reason still shows as an inline message instead of crashing.
+- A permission error surfaced by the API for some other reason (e.g. it was revoked mid-session) still shows as an inline message instead of crashing.
 
 ## Deploying
 
